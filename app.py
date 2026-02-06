@@ -4,9 +4,9 @@ import time
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
-st.set_page_config(page_title="Control de Obra", layout="wide")
+st.set_page_config(page_title="Control de Obra Pro", layout="wide")
 
-st.title("🏗️ Registro de Gastos de Construcción")
+st.title("🏗️ Control de Gastos por Etapas")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -25,21 +25,24 @@ df_obra = lectura_segura()
 with st.sidebar:
     st.header("📝 Nuevo Gasto")
     
-    # Selección de categoría primero para ajustar el monto
-    cat_opciones = ["Mano de Obra", "Materiales", "Fletes", "Otros"]
+    # Etapa de Obra (Por defecto Cimentación)
+    etapa_opciones = ["Cimentación", "Estructura", "Instalaciones", "Acabados", "Exteriores"]
+    etapa_sel = st.selectbox("ETAPA DE OBRA", etapa_opciones, index=0)
+    
+    # Categoría (Agregada: Permisos)
+    cat_opciones = ["Mano de Obra", "Materiales", "Permisos", "Fletes", "Otros"]
     categoria_sel = st.selectbox("CATEGORÍA", cat_opciones)
     
-    # Si es "Otros", habilitar campo de texto
     if categoria_sel == "Otros":
-        categoria_final = st.text_input("¿Qué tipo de gasto es?", placeholder="Ej: Trámites")
+        categoria_final = st.text_input("Especificar categoría:", placeholder="Ej: Herramienta")
     else:
         categoria_final = categoria_sel
 
-    concepto = st.text_input("CONCEPTO", placeholder="Ej: Pago albañil Juan")
+    concepto = st.text_input("CONCEPTO", placeholder="Ej: Pago a cuadrilla, Licencia municipal...")
     
-    # Monto por defecto basado en la selección
+    # Monto con valor por defecto de 400 para Mano de Obra
     monto_default = "400" if categoria_sel == "Mano de Obra" else ""
-    monto_txt = st.text_input("MONTO ($)", value=monto_default, placeholder="Solo números")
+    monto_txt = st.text_input("MONTO ($)", value=monto_default)
     
     def limpiar_monto(val):
         try: return float(val.replace(',', ''))
@@ -53,25 +56,23 @@ with st.sidebar:
     st.divider()
     st.header("🗑️ Eliminar Registro")
     if not df_obra.empty:
-        # Lista de opciones para borrar (ID + Concepto)
         opciones_borrar = [f"{i} - {df_obra.loc[i, 'CONCEPTO']}" for i in reversed(df_obra.index)]
         seleccion_borrar = st.selectbox("Selecciona para borrar:", opciones_borrar)
         
         if st.button("ELIMINAR SELECCIONADO ❌", use_container_width=True):
-            st.session_state.confirmar_borrado = True
+            st.session_state.confirmar_borrado_obra = True
 
-        if st.session_state.get('confirmar_borar_obra', False) or st.session_state.get('confirmar_borrado', False):
-            st.warning("¿Estás seguro?")
+        if st.session_state.get('confirmar_borrado_obra', False):
+            st.warning("¿Confirmas la eliminación?")
             c1, c2 = st.columns(2)
-            if c1.button("SÍ, BORRAR", type="primary"):
+            if c1.button("SÍ, BORRAR"):
                 id_a_borrar = int(seleccion_borrar.split(" - ")[0])
-                df_nuevo = df_obra.drop(id_a_borrar)
-                conn.update(data=df_nuevo)
-                st.session_state.confirmar_borrado = False
+                conn.update(data=df_obra.drop(id_a_borrar))
+                st.session_state.confirmar_borrado_obra = False
                 st.cache_data.clear()
                 st.rerun()
             if c2.button("NO"):
-                st.session_state.confirmar_borrado = False
+                st.session_state.confirmar_borrado_obra = False
                 st.rerun()
 
 # --- ACCIÓN DE GUARDADO ---
@@ -80,6 +81,7 @@ if btn_guardar and concepto and monto > 0:
         "FECHA_REGISTRO": datetime.now().strftime("%d/%m/%Y %H:%M"),
         "CONCEPTO": concepto,
         "CATEGORIA": categoria_final if categoria_final else "Otros",
+        "ETAPA": etapa_sel,
         "MONTO": monto,
         "FECHA_GASTO": fecha_gasto.strftime("%d/%m/%Y")
     }])
@@ -88,33 +90,33 @@ if btn_guardar and concepto and monto > 0:
     st.cache_data.clear()
     st.rerun()
 
-# --- REPORTES ---
+# --- REPORTES Y TABLA ---
 if not df_obra.empty:
     df_obra['FECHA_GASTO_DT'] = pd.to_datetime(df_obra['FECHA_GASTO'], format="%d/%m/%Y")
     hoy = datetime.now()
     
     st.subheader("📊 Resumen de Gastos")
     t1, t2, t3 = st.columns(3)
-    
-    # Gasto Total
     t1.metric("Total Acumulado", f"${df_obra['MONTO'].sum():,.2f}")
     
-    # Gasto de esta Semana
+    # Gasto de la semana
     inicio_sem = hoy - timedelta(days=hoy.weekday())
     g_sem = df_obra[df_obra['FECHA_GASTO_DT'] >= inicio_sem]['MONTO'].sum()
     t2.metric("Esta Semana", f"${g_sem:,.2f}")
     
-    # Gasto de este Mes
-    g_mes = df_obra[df_obra['FECHA_GASTO_DT'].dt.month == hoy.month]['MONTO'].sum()
-    t3.metric(f"Mes ({hoy.strftime('%B')})", f"${g_mes:,.2f}")
+    # Gasto por Etapa seleccionada
+    etapa_filtro = st.selectbox("Ver total por Etapa:", ["Todas"] + etapa_opciones)
+    if etapa_filtro != "Todas":
+        total_etapa = df_obra[df_obra['ETAPA'] == etapa_filtro]['MONTO'].sum()
+        st.info(f"Gasto total en **{etapa_filtro}**: ${total_etapa:,.2f}")
 
     st.divider()
     
-    # --- TABLA DE REGISTROS ---
-    st.subheader("📋 Historial Completo")
+    st.subheader("📋 Historial de Obra")
+    # Mostrar la tabla con la nueva columna de ETAPA
     st.dataframe(
-        df_obra.sort_index(ascending=False)[["FECHA_GASTO", "CONCEPTO", "CATEGORIA", "MONTO"]],
+        df_obra.sort_index(ascending=False)[["FECHA_GASTO", "ETAPA", "CONCEPTO", "CATEGORIA", "MONTO"]],
         use_container_width=True
     )
 else:
-    st.info("No hay gastos registrados. Usa el panel de la izquierda para comenzar.")
+    st.info("Registra tu primer gasto para ver el historial.")
